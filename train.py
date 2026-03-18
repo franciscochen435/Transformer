@@ -45,10 +45,10 @@ def eval_loss(model, dataloader, device):
             x, y = x.to(device), y.to(device)
 
             logits = model(x)
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                y.view(-1)
-            )
+    loss = F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)),
+        y.reshape(-1)
+    )
             total_loss += loss.item()
 
     return total_loss / len(dataloader)
