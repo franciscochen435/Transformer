@@ -1,7 +1,7 @@
 import math
 import torch
 import torch.nn.functional as F
-import matplotlib.pyplot as pyplot
+import matplotlib.pyplot as plt
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, random_split
 from checkpoint import save_checkpoint
