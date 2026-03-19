@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import config as *
+from config import *
 
 # For each token, calculate the dependency with other tokens. 
 class SelfAttention(nn.Module):
