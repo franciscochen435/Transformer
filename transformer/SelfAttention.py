@@ -21,6 +21,11 @@ class SelfAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
 
+        self.register_buffer(
+            "mask",
+            torch.tril(torch.ones(1024, 1024))  # max_seq_len
+        )
+
     def forward(self, x):
         B, T, C = x.shape
 
@@ -37,7 +42,7 @@ class SelfAttention(nn.Module):
         scores = (Q @ K.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, H, T, T)
 
         # Casual mask, making sure the model can only view the previous value
-        mask = torch.tril(torch.ones(T, T, device=x.device)).unsqueeze(0).unsqueeze(0)  # (1,1,T,T)
+        mask = self.mask[:, :, :T, :T]
         scores = scores.masked_fill(mask == 0, float('-inf'))
 
         attn = F.softmax(scores, dim=-1)
