@@ -9,7 +9,7 @@ from .FeedForward import FeedForward
 #     - Residual connections (help gradient flow)
 #     - combine self-attention and feedforward
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.15):
         super().__init__()
         self.ln1 = nn.LayerNorm(d_model)
         self.attn = SelfAttention(d_model, n_heads, dropout)
