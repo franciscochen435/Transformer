@@ -43,7 +43,7 @@ def train_one_epoch(model, dataloader, optimizer, device, epoch, start_step = 0)
         total_loss += loss.item()
         effective_steps += 1
 
-        if effective_steps % 100 == 0:
+        if effective_steps % 1000 == 0:
             print(f"step {effective_steps}, loss = {loss.item():.4f}")
             
         # step-level checkpoint
