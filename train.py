@@ -19,7 +19,7 @@ def train_one_epoch(model, dataloader, optimizer, device, epoch, start_step = 0)
     total_loss = 0.0
     effective_steps = 0
     step_ckpt_interval = 500
-    max_steps_per_epoch = 1000
+    max_steps_per_epoch = 10000
 
     for step, (x, y) in enumerate(dataloader):
         
@@ -133,7 +133,6 @@ def main():
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    print("steps per epoch =", len(train_dataloader))
 
     run_device = device if torch.cuda.is_available() else "cpu"
 
