@@ -98,34 +98,44 @@ def eval_loss(model, dataloader, device, max_eval_steps=200):
 def main():
     tokenizer = Tokenizer.from_file("tokenizer/trained_tokenizer/tokenizer.json")
 
-    # with open("wiki.train.txt", "r", encoding="utf-8") as f:
-    #     lines = f.readlines()
+    wikitext = load_dataset("wikitext", "wikitext-2-raw-v1")
 
-    token_ids = []
-    for line in lines:
-        line = line.strip()
-        if line:
-            token_ids.extend(tokenizer.encode(line).ids)
+    eos_id = tokenizer.token_to_id("<eos>")
 
-    print(f"Total tokens: {len(token_ids)}")
+    def encode_split(split_name):
+        token_ids = []
+        for line in wikitext[split_name]["text"]:
+            line = line.strip()
+            if not line:
+                continue
 
-    dataset = LMDataset(token_ids, max_seq_len)
+            ids = tokenizer.encode(line).ids
+            token_ids.extend(ids)
 
-    train_size = int(0.8 * len(dataset))
-    val_size = int(0.1 * len(dataset))
-    test_size = len(dataset) - train_size - val_size
+            if eos_id is not None:
+                token_ids.append(eos_id)
 
-    train_dataset, val_dataset, test_dataset = random_split(
-        dataset, [train_size, val_size, test_size]
-    )
+        return token_ids
 
-    dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    token_ids_train = encode_split("train")
+    token_ids_val = encode_split("validation")
+    token_ids_test = encode_split("test")
+
+    print(f"Train tokens: {len(token_ids_train)}")
+    print(f"Val tokens: {len(token_ids_val)}")
+    print(f"Test tokens: {len(token_ids_test)}")
+
+    train_dataset = LMDataset(token_ids_train, max_seq_len)
+    val_dataset = LMDataset(token_ids_val, max_seq_len)
+    test_dataset = LMDataset(token_ids_test, max_seq_len)
+
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     run_device = device if torch.cuda.is_available() else "cpu"
-    
-    model = CustormerModel(
+
+    model = CustomerModel(
         vocab_size=vocab_size,
         max_seq_len=max_seq_len,
         d_model=d_model,
@@ -136,26 +146,27 @@ def main():
     ).to(run_device)
 
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    
+
     start_epoch = 0
     start_step = 0
     checkpoint_path = "checkpoints/latest.pt"
 
+    # 如果你之后要恢复训练，再打开
     # if os.path.exists(checkpoint_path):
     #     model, optimizer, start_epoch, start_step, _ = load_checkpoint(
     #         model, optimizer, checkpoint_path, run_device
     #     )
     #     print(f"Resuming training from epoch {start_epoch}, step {start_step}")
 
-    train_losses = []  # ADDED
-    val_losses = []  # ADDED
+    train_losses = []
+    val_losses = []
 
     for epoch in range(start_epoch, epochs):
         current_start_step = start_step if epoch == start_epoch else 0
 
         avg_loss = train_one_epoch(
             model,
-            dataloader,
+            train_dataloader,
             optimizer,
             run_device,
             epoch,
@@ -164,14 +175,13 @@ def main():
 
         avg_val_loss = eval_loss(model, val_dataloader, run_device, max_eval_steps=200)
 
-        train_losses.append(avg_loss) 
+        train_losses.append(avg_loss)
         val_losses.append(avg_val_loss)
 
         print(f"Epoch {epoch + 1}/{epochs}, train_loss = {avg_loss:.4f}, val_loss = {avg_val_loss:.4f}")
 
-
-    plt.plot(range(1, epochs + 1), train_losses, label="Training Loss")
-    plt.plot(range(1, epochs + 1), val_losses, label="Validation Loss")
+    plt.plot(range(1, len(train_losses) + 1), train_losses, label="Training Loss")
+    plt.plot(range(1, len(val_losses) + 1), val_losses, label="Validation Loss")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.title("Learning Curve")
@@ -188,7 +198,6 @@ def main():
 
     torch.save(model.state_dict(), "gpt_model.pt")
     print("training finished, model saved to gpt_model.pt")
-
 
 if __name__ == "__main__":
     main()
