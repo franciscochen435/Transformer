@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from checkpoint import save_checkpoint, load_checkpoint
 from tokenizers import Tokenizer
@@ -14,7 +15,7 @@ from transformer.CustomerModel import CustomerModel
 from dataset import LMDataset
 
 
-def train_one_epoch(model, dataloader, optimizer, device, epoch, start_step = 0):
+def train_one_epoch(model, dataloader, optimizer, scheduler, device, epoch, start_step = 0):
     model.train()
     total_loss = 0.0
     effective_steps = 0
@@ -40,6 +41,7 @@ def train_one_epoch(model, dataloader, optimizer, device, epoch, start_step = 0)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+        scheduler.step()
 
         total_loss += loss.item()
         effective_steps += 1
@@ -69,6 +71,16 @@ def train_one_epoch(model, dataloader, optimizer, device, epoch, start_step = 0)
 
     return total_loss / max(effective_steps, 1)
 
+# implement scheduler to further reduce loss and perplexity
+def get_lr_scheduler(optimizer, warmup_steps, total_steps):
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            return float(current_step + 1) / float(max(1, warmup_steps))
+        return max(
+            0.1,
+            float(total_steps - current_step) / float(max(1, total_steps - warmup_steps))
+        )
+    return LambdaLR(optimizer, lr_lambda)
 
 def eval_loss(model, dataloader, device, max_eval_steps=200):
     model.eval()
@@ -148,20 +160,19 @@ def main():
     ).to(run_device)
 
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    max_steps_this_epoch = min(len(train_dataloader), max_steps_per_epoch)
+    total_training_steps = max_steps_this_epoch * epochs
+    scheduler = get_lr_scheduler(optimizer, warmup_steps, total_training_steps)
 
     start_epoch = 0
     start_step = 0
     checkpoint_path = "checkpoints/latest.pt"
 
-    # 如果你之后要恢复训练，再打开
-    # if os.path.exists(checkpoint_path):
-    #     model, optimizer, start_epoch, start_step, _ = load_checkpoint(
-    #         model, optimizer, checkpoint_path, run_device
-    #     )
-    #     print(f"Resuming training from epoch {start_epoch}, step {start_step}")
-
     train_losses = []
     val_losses = []
+    best_val_loss = float("inf")
+    patience = 2
+    no_improve_epochs = 0
 
     for epoch in range(start_epoch, epochs):
         current_start_step = start_step if epoch == start_epoch else 0
@@ -170,6 +181,7 @@ def main():
             model,
             train_dataloader,
             optimizer,
+            scheduler,
             run_device,
             epoch,
             start_step=current_start_step
@@ -182,6 +194,28 @@ def main():
 
         print(f"Epoch {epoch + 1}/{epochs}, train_loss = {avg_loss:.4f}, val_loss = {avg_val_loss:.4f}")
 
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            no_improve_epochs = 0
+            torch.save(model.state_dict(), "best_gpt_model.pt")
+            print(f"Best model saved with val_loss = {best_val_loss:.4f}")
+        else:
+            no_improve_epochs += 1
+            print(f"No improvement for {no_improve_epochs} epoch(s)")
+
+        save_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            step=0,
+            epoch=epoch,
+            loss=avg_val_loss,
+            filepath="checkpoints/latest.pt"
+        )
+
+        if no_improve_epochs >= patience:
+            print("Early stopping triggered.")
+            break
+
     plt.plot(range(1, len(train_losses) + 1), train_losses, label="Training Loss")
     plt.plot(range(1, len(val_losses) + 1), val_losses, label="Validation Loss")
     plt.xlabel("Epoch")
@@ -192,6 +226,8 @@ def main():
     plt.savefig("learning_curve.png")
     plt.close()
 
+    model.load_state_dict(torch.load("best_gpt_model.pt", map_location=run_device))
+    print("Loaded best model for test evaluation.")
     test_loss = eval_loss(model, test_dataloader, run_device)
     perplexity = math.exp(test_loss)
 
