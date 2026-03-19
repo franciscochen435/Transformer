@@ -4,9 +4,10 @@ import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from torch.optim import AdamW
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 from checkpoint import save_checkpoint, load_checkpoint
 from tokenizers import Tokenizer
+from datasets import load_dataset
 
 from config import *
 from transformer.CustomerModel import CustomerModel
