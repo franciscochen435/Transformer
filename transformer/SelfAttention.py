@@ -23,7 +23,7 @@ class SelfAttention(nn.Module):
 
         self.register_buffer(
             "mask",
-            torch.tril(torch.ones(1024, 1024))  # max_seq_len
+            torch.tril(torch.ones(max_seq_len, max_seq_len)).unsqueeze(0).unsqueeze(0)
         )
 
     def forward(self, x):
