@@ -5,11 +5,11 @@ n_heads = 4  # Size of attention heads in multi-head self-attention
 n_layers = 6  # Size of Transformer blocks
 d_ff = 512  # Hidden dimension of the FFN
 dropout = 0.2  # Dropout probability applied during training
-
 batch_size = 8  # Training batch size
 lr = 1e-4  # Learning rate for the optimizer.
 weight_decay = 0.02  # weight decay
 epochs = 5  # Number of full passes over the training dataset
+max_steps_per_epoch = 10000 # steps of each epoch
 warmup_steps = 1000  # Warmup steps for the learning-rate schedule
 grad_accum_steps = 1  # Gradient accumulation steps to simulate a larger batch
 device = "cuda"  # GPU
