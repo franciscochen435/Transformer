@@ -138,7 +138,7 @@ def main():
     print(f"Val tokens: {len(token_ids_val)}")
     print(f"Test tokens: {len(token_ids_test)}")
 
-    train_dataset = LMDataset(token_ids_train, max_seq_len, stride=32)
+    train_dataset = LMDataset(token_ids_train, max_seq_len, stride=8)
     val_dataset = LMDataset(token_ids_val, max_seq_len, stride=128)
     test_dataset = LMDataset(token_ids_test, max_seq_len, stride=128)
 
