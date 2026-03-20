@@ -13,7 +13,7 @@ class LMDataset(Dataset):
         return (len(self.token_ids) - self.seq_len - 1) // self.stride + 1
 
     def __getitem__(self, idx):
-        tart = idx * self.stride
+        start = idx * self.stride
         chunk = self.token_ids[start : start + self.seq_len + 1]
         x = torch.tensor(chunk[:-1], dtype=torch.long)
         y = torch.tensor(chunk[1:], dtype=torch.long)
