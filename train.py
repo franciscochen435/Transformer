@@ -143,6 +143,7 @@ def main():
     test_dataset = LMDataset(token_ids_test, max_seq_len, stride=128)
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    print("Train dataloader steps per epoch:", len(train_dataloader))
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
