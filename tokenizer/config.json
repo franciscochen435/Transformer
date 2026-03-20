@@ -1,5 +1,5 @@
 {
     "size": 32000,
-    "special_tokens": ["<s>", "<pad>", "</s>", "<unk>", "<mask>", "</eos>"],
+    "special_tokens": ["<s>", "<pad>", "</s>", "<unk>", "<mask>", "<eos>"],
     "end_of_word": "</w>"
 }
