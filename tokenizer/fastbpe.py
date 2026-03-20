@@ -16,13 +16,12 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 tokenizer = Tokenizer(BPE(unk_token="<unk>"))
 
-# tokenizer.normalizer = Sequence([NFKC(), Lowercase()])
-tokenizer.normalizer = NFKC()
+tokenizer.normalizer = Sequence([NFKC(), Lowercase()])
 tokenizer.pre_tokenizer = Whitespace()
 
 trainer = BpeTrainer(
     vocab_size=cf["size"],
-    min_frequency=5,
+    min_frequency=2,
     special_tokens=cf["special_tokens"],
 )
 
