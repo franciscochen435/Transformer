@@ -102,7 +102,7 @@ def eval_loss(model, dataloader, device, max_eval_steps=None):
             total_loss += loss.item()
             steps += 1
 
-            if steps % 50 == 0:
+            if steps % 500 == 0:
                 print(f"eval step {steps}, loss = {loss.item():.4f}")
 
     return total_loss / max(steps, 1)
