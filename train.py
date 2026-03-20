@@ -81,7 +81,7 @@ def get_lr_scheduler(optimizer, warmup_steps, total_steps):
         )
     return LambdaLR(optimizer, lr_lambda)
 
-def eval_loss(model, dataloader, device, max_eval_steps=200):
+def eval_loss(model, dataloader, device, max_eval_steps=None):
     model.eval()
     total_loss = 0.0
     steps = 0
@@ -192,7 +192,7 @@ def main():
             start_step=current_start_step
         )
 
-        avg_val_loss = eval_loss(model, val_dataloader, run_device, max_eval_steps=200)
+        avg_val_loss = eval_loss(model, val_dataloader, run_device, max_eval_steps=2000)
 
         train_losses.append(avg_loss)
         val_losses.append(avg_val_loss)
@@ -225,7 +225,7 @@ def main():
 
     model.load_state_dict(torch.load("best_gpt_model.pt", map_location=run_device))
     print("Loaded best model for test evaluation.")
-    test_loss = eval_loss(model, test_dataloader, run_device)
+    test_loss = eval_loss(model, test_dataloader, run_device, max_eval_steps=None)
     perplexity = math.exp(test_loss)
 
     print(f"Test Loss = {test_loss:.4f}")
