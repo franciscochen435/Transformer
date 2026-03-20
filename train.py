@@ -56,7 +56,7 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, device, epoch, star
                 step=effective_steps,
                 epoch=epoch,
                 loss=loss.item(),
-                filepath=f"checkpoints/step_ckpt_epoch{epoch + 1}_step{step}.pt"
+                filepath=f"checkpoints/step_ckpt_epoch{epoch + 1}_step{effective_steps}.pt"
             )
             
             save_checkpoint(
@@ -76,7 +76,7 @@ def get_lr_scheduler(optimizer, warmup_steps, total_steps):
         if current_step < warmup_steps:
             return float(current_step + 1) / float(max(1, warmup_steps))
         return max(
-            0.1,
+            0.01,
             float(total_steps - current_step) / float(max(1, total_steps - warmup_steps))
         )
     return LambdaLR(optimizer, lr_lambda)
@@ -166,12 +166,18 @@ def main():
     start_epoch = 0
     start_step = 0
     checkpoint_path = "checkpoints/latest.pt"
+    if os.path.exists(checkpoint_path):
+    model, optimizer, start_epoch, start_step, _ = load_checkpoint(
+        model,
+        optimizer,
+        checkpoint_path,
+        run_device
+    )
+    print(f"Resuming from epoch {start_epoch}, step {start_step}")
 
     train_losses = []
     val_losses = []
     best_val_loss = float("inf")
-    patience = 2
-    no_improve_epochs = 0
 
     for epoch in range(start_epoch, epochs):
         current_start_step = start_step if epoch == start_epoch else 0
@@ -195,12 +201,8 @@ def main():
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            no_improve_epochs = 0
             torch.save(model.state_dict(), "best_gpt_model.pt")
             print(f"Best model saved with val_loss = {best_val_loss:.4f}")
-        else:
-            no_improve_epochs += 1
-            print(f"No improvement for {no_improve_epochs} epoch(s)")
 
         save_checkpoint(
             model=model,
@@ -210,10 +212,6 @@ def main():
             loss=avg_val_loss,
             filepath="checkpoints/latest.pt"
         )
-
-        if no_improve_epochs >= patience:
-            print("Early stopping triggered.")
-            break
 
     plt.plot(range(1, len(train_losses) + 1), train_losses, label="Training Loss")
     plt.plot(range(1, len(val_losses) + 1), val_losses, label="Validation Loss")
