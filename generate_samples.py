@@ -37,8 +37,8 @@ class TextGenerator:
         with torch.no_grad():
             for _ in range(max_new_tokens):
                 input_ids = self.crop_context(input_ids)
-                logits = self.model(input_ids)              # [B, T, V]
-                next_token_logits = logits[:, -1, :]        # [B, V]
+                logits = self.model(input_ids)
+                next_token_logits = logits[:, -1, :]
                 next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
                 input_ids = torch.cat([input_ids, next_token], dim=1)
 
@@ -59,8 +59,8 @@ class TextGenerator:
                 logits = self.model(input_ids)
                 next_token_logits = logits[:, -1, :] / temperature
 
-                k = min(k, next_token_logits.size(-1))
-                top_k_vals, top_k_idx = torch.topk(next_token_logits, k=k, dim=-1)
+                effective_k = min(k, next_token_logits.size(-1))
+                top_k_vals, top_k_idx = torch.topk(next_token_logits, k=effective_k, dim=-1)
                 probs = F.softmax(top_k_vals, dim=-1)
                 sampled_idx = torch.multinomial(probs, num_samples=1)
                 next_token = top_k_idx.gather(-1, sampled_idx)
@@ -96,7 +96,6 @@ class TextGenerator:
 
                 sorted_logits[remove_mask] = float("-inf")
                 filtered_probs = F.softmax(sorted_logits, dim=-1)
-
                 sampled_idx = torch.multinomial(filtered_probs, num_samples=1)
                 next_token = sorted_indices.gather(-1, sampled_idx)
 
@@ -116,8 +115,20 @@ def load_model(model_path: str, device: str):
         dropout=dropout,
     ).to(device)
 
-    state_dict = torch.load(model_path, map_location=device)
-    model.load_state_dict(state_dict)
+    checkpoint = torch.load(model_path, map_location=device)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+    else:
+        state_dict = checkpoint
+
+    try:
+        model.load_state_dict(state_dict, strict=True)
+    except RuntimeError as e:
+        raise RuntimeError(
+            "Failed to load weights into CustomerModel. "
+            "Ensure config.py matches the run that produced the checkpoint, "
+            "and tokenizer/trained_tokenizer/tokenizer.json matches training."
+        ) from e
     model.eval()
     return model
 
@@ -142,9 +153,16 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     tokenizer_path = os.path.join("tokenizer", "trained_tokenizer", "tokenizer.json")
-    model_path = "gpt_model.pt"   # idk wht the trained model is called assuming it's this
+    model_path = "gpt_model.pt"
 
     tokenizer = Tokenizer.from_file(tokenizer_path)
+    tok_vocab = tokenizer.get_vocab_size()
+    if tok_vocab != vocab_size:
+        raise ValueError(
+            f"config vocab_size ({vocab_size}) != tokenizer vocab size ({tok_vocab}). "
+            "Use the same tokenizer as training, or update config.py."
+        )
+
     model = load_model(model_path, device)
 
     prompts = [

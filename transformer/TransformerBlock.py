@@ -1,13 +1,7 @@
-import torch
 import torch.nn as nn
 from .SelfAttention import SelfAttention
 from .FeedForward import FeedForward
 
-# A single Transformer decoder block
-# Key Design:
-#     - Pre-LayerNorm (better training stability)
-#     - Residual connections (help gradient flow)
-#     - combine self-attention and feedforward
 class TransformerBlock(nn.Module):
     def __init__(self, d_model, n_heads, d_ff, max_seq_len, dropout=0.15):
         super().__init__()
@@ -17,6 +11,7 @@ class TransformerBlock(nn.Module):
         self.ff = FeedForward(d_model, d_ff, dropout)
 
     def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + self.ff(self.ln2(x))
-        return x
+        attn_out = self.attn(self.ln1(x))
+        x = x + attn_out
+        ff_out = self.ff(self.ln2(x))
+        return x + ff_out

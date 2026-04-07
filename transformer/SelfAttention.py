@@ -2,20 +2,18 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config import *
 
-# For each token, calculate the dependency with other tokens. 
 class SelfAttention(nn.Module):
     def __init__(self, d_model, n_heads, max_seq_len, dropout=0.15):
         super().__init__()
-        # it is multi-heap self-attention, making sure each head has the same dimension
-        assert d_model % n_heads == 0
+        if d_model % n_heads != 0:
+            raise ValueError(f"d_model ({d_model}) must be divisible by n_heads ({n_heads}).")
 
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
+        self.max_seq_len = max_seq_len
 
-        # q: query, k: key, v: value
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
@@ -29,22 +27,25 @@ class SelfAttention(nn.Module):
 
     def forward(self, x):
         B, T, C = x.shape
+        if T > self.max_seq_len:
+            raise ValueError(
+                f"Input sequence length {T} exceeds max_seq_len {self.max_seq_len}."
+            )
 
         Q = self.q_proj(x)  # (B, T, C)
         K = self.k_proj(x)
         V = self.v_proj(x)
 
         # (B, H, T, D)
-        # Batch, #head, #token, #dim in each head
         Q = Q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         K = K.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         V = V.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
 
         scores = (Q @ K.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, H, T, T)
 
-        # Casual mask, making sure the model can only view the previous value
+        # Causal mask: only attend to current and previous tokens.
         mask = self.mask[:, :, :T, :T]
-        scores = scores.masked_fill(mask == 0, float('-inf'))
+        scores = scores.masked_fill(mask == 0, float("-inf"))
 
         attn = F.softmax(scores, dim=-1)
         attn = self.dropout(attn)
