@@ -46,20 +46,27 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, device):
     return total_loss / max(effective_steps, 1)
 
 
-def get_lr_scheduler(optimizer, warmup_steps, total_steps, last_epoch=-1):
+def get_lr_scheduler(optimizer, warmup_steps, total_steps, last_epoch=-1, eta_min_ratio=0.01):
     if total_steps < 1:
         raise ValueError(f"total_steps must be >= 1, got {total_steps}.")
     warmup_steps = max(0, warmup_steps)
-    decay_denominator = max(1, total_steps - warmup_steps)
 
     def lr_lambda(step: int):
         if step < warmup_steps:
-            return (step + 1) / max(warmup_steps, 1)
-        progress = (total_steps - step) / decay_denominator
-        return max(0.01, progress)
+            return float(step + 1) / float(max(warmup_steps, 1))
+        if step >= total_steps:
+            return float(eta_min_ratio)
+        i = step - warmup_steps
+        cosine_steps = total_steps - warmup_steps
+        if cosine_steps <= 0:
+            return 1.0
+        progress = float(i) / float(max(1, cosine_steps - 1))
+        progress = min(1.0, progress)
+        return float(eta_min_ratio) + (1.0 - float(eta_min_ratio)) * 0.5 * (
+            1.0 + math.cos(math.pi * progress)
+        )
 
     return LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
-
 
 def eval_loss(model, dataloader, device, max_eval_steps=None):
     model.eval()
