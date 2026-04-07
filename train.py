@@ -99,7 +99,7 @@ def _encode_wikitext_split(wikitext, split_name, tokenizer, eos_id):
 
 
 def main():
-    tokenizer = Tokenizer.from_file("tokenizer/trained_tokenizer/tokenizer.json")
+    tokenizer = Tokenizer.from_file("tokenizer/trained_tokenizer/tokenizer1.json")
     tok_vocab = tokenizer.get_vocab_size()
     if tok_vocab != vocab_size:
         raise ValueError(
