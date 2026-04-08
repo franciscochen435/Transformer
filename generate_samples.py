@@ -1,25 +1,112 @@
 import json
 import os
-
 import torch
 import torch.nn.functional as F
+
 from tokenizers import Tokenizer
 
 from config import vocab_size, max_seq_len, d_model, n_heads, n_layers, d_ff, dropout
-from transformer.CustomerModel import CustomerModel
-
-# --- Decoding hyperparameters (per spec) ---
-TOP_K = 50
-NUCLEUS_P = 0.9
-TEMPERATURE = 1.0  # not specified in the brief; 1.0 is standard for sampling steps
-MAX_NEW_TOKENS = 80
-
-MODEL_PATH = "gpt_model.pt"
-TOKENIZER_PATH = os.path.join("tokenizer", "trained_tokenizer", "tokenizer.json")
+from transformer.PreTrainingModel import PreTrainingModel
 
 
-def load_trained_model(model_path: str, device: str) -> CustomerModel:
-    model = CustomerModel(
+class TextGenerator:
+    def __init__(self, model, tokenizer, device="cpu"):
+        self.model = model.to(device)
+        self.tokenizer = tokenizer
+        self.device = device
+        self.model.eval()
+
+    def encode_prompt(self, prompt: str) -> torch.Tensor:
+        encoding = self.tokenizer.encode(prompt)
+        ids = encoding.ids
+        if len(ids) == 0:
+            raise ValueError("Prompt produced no token IDs. Try a different prompt.")
+        return torch.tensor([ids], dtype=torch.long, device=self.device)
+
+    def decode_tokens(self, token_ids):
+        return self.tokenizer.decode(token_ids)
+
+    def crop_context(self, input_ids: torch.Tensor) -> torch.Tensor:
+        if input_ids.size(1) > max_seq_len:
+            input_ids = input_ids[:, -max_seq_len:]
+        return input_ids
+
+    def greedy_decode(self, prompt: str, max_new_tokens: int = 50) -> str:
+        input_ids = self.encode_prompt(prompt)
+
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                input_ids = self.crop_context(input_ids)
+                logits = self.model(input_ids)              # [B, T, V]
+                next_token_logits = logits[:, -1, :]        # [B, V]
+                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+                input_ids = torch.cat([input_ids, next_token], dim=1)
+
+        return self.decode_tokens(input_ids[0].tolist())
+
+    def top_k_decode(
+        self,
+        prompt: str,
+        max_new_tokens: int = 50,
+        k: int = 50,
+        temperature: float = 1.0
+    ) -> str:
+        input_ids = self.encode_prompt(prompt)
+
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                input_ids = self.crop_context(input_ids)
+                logits = self.model(input_ids)
+                next_token_logits = logits[:, -1, :] / temperature
+
+                k = min(k, next_token_logits.size(-1))
+                top_k_vals, top_k_idx = torch.topk(next_token_logits, k=k, dim=-1)
+                probs = F.softmax(top_k_vals, dim=-1)
+                sampled_idx = torch.multinomial(probs, num_samples=1)
+                next_token = top_k_idx.gather(-1, sampled_idx)
+
+                input_ids = torch.cat([input_ids, next_token], dim=1)
+
+        return self.decode_tokens(input_ids[0].tolist())
+
+    def nucleus_decode(
+        self,
+        prompt: str,
+        max_new_tokens: int = 50,
+        p: float = 0.9,
+        temperature: float = 1.0
+    ) -> str:
+        input_ids = self.encode_prompt(prompt)
+
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                input_ids = self.crop_context(input_ids)
+                logits = self.model(input_ids)
+                next_token_logits = logits[:, -1, :] / temperature
+
+                sorted_logits, sorted_indices = torch.sort(
+                    next_token_logits, descending=True, dim=-1
+                )
+                sorted_probs = F.softmax(sorted_logits, dim=-1)
+                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
+                remove_mask = cumulative_probs > p
+                remove_mask[..., 1:] = remove_mask[..., :-1].clone()
+                remove_mask[..., 0] = False
+
+                sorted_logits[remove_mask] = float("-inf")
+                filtered_probs = F.softmax(sorted_logits, dim=-1)
+
+                sampled_idx = torch.multinomial(filtered_probs, num_samples=1)
+                next_token = sorted_indices.gather(-1, sampled_idx)
+
+                input_ids = torch.cat([input_ids, next_token], dim=1)
+
+        return self.decode_tokens(input_ids[0].tolist())
+
+
+def load_model(model_path: str, device: str):
+    model = PreTrainingModel(
         vocab_size=vocab_size,
         max_seq_len=max_seq_len,
         d_model=d_model,
@@ -28,167 +115,71 @@ def load_trained_model(model_path: str, device: str) -> CustomerModel:
         d_ff=d_ff,
         dropout=dropout,
     ).to(device)
-    ckpt = torch.load(model_path, map_location=device)
-    state = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
-    model.load_state_dict(state, strict=True)
+
+    state_dict = torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict)
     model.eval()
     return model
 
 
-def encode_prompt(tokenizer: Tokenizer, prompt: str, device: str) -> torch.Tensor:
-    enc = tokenizer.encode(prompt)
-    ids = enc.ids
-    if not ids:
-        raise ValueError("Empty prompt after tokenization.")
-    return torch.tensor([ids], dtype=torch.long, device=device)
+def save_results(results, json_path="generated_samples.json", txt_path="generated_samples.txt"):
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
 
-
-def crop_context(input_ids: torch.Tensor) -> torch.Tensor:
-    if input_ids.size(1) > max_seq_len:
-        input_ids = input_ids[:, -max_seq_len:]
-    return input_ids
-
-
-def _eos_id(tokenizer: Tokenizer):
-    eid = tokenizer.token_to_id("<eos>")
-    return eid if eid is not None else None
-
-
-def greedy_decode(model: CustomerModel, tokenizer: Tokenizer, prompt: str, device: str) -> str:
-    """Always select the token with highest probability at each step."""
-    eos = _eos_id(tokenizer)
-    input_ids = encode_prompt(tokenizer, prompt, device)
-    with torch.no_grad():
-        for _ in range(MAX_NEW_TOKENS):
-            input_ids = crop_context(input_ids)
-            logits = model(input_ids)[0, -1, :]
-            next_id = int(torch.argmax(logits).item())
-            input_ids = torch.cat(
-                [input_ids, torch.tensor([[next_id]], device=device)], dim=1
-            )
-            if eos is not None and next_id == eos:
-                break
-    return tokenizer.decode(input_ids[0].tolist())
-
-
-def top_k_decode(
-    model: CustomerModel,
-    tokenizer: Tokenizer,
-    prompt: str,
-    device: str,
-    k: int = TOP_K,
-    temperature: float = TEMPERATURE,
-) -> str:
-    """
-    Restrict sampling to the top-k logits, then sample proportionally to softmax within that set.
-    k = 50 per assignment.
-    """
-    input_ids = encode_prompt(tokenizer, prompt, device)
-    k = min(k, vocab_size)
-    eos = _eos_id(tokenizer)
-    with torch.no_grad():
-        for _ in range(MAX_NEW_TOKENS):
-            input_ids = crop_context(input_ids)
-            logits = model(input_ids)[0, -1, :] / temperature
-            top_vals, top_idx = torch.topk(logits, k=k, dim=-1)
-            probs = F.softmax(top_vals, dim=-1)
-            choice = torch.multinomial(probs, num_samples=1)
-            next_id = int(top_idx[choice].item())
-            input_ids = torch.cat(
-                [input_ids, torch.tensor([[next_id]], device=device)], dim=1
-            )
-            if eos is not None and next_id == eos:
-                break
-    return tokenizer.decode(input_ids[0].tolist())
-
-
-def nucleus_decode(
-    model: CustomerModel,
-    tokenizer: Tokenizer,
-    prompt: str,
-    device: str,
-    p: float = NUCLEUS_P,
-    temperature: float = TEMPERATURE,
-) -> str:
-    """
-    Nucleus (top-p): sort by probability, keep the smallest prefix with cumulative mass >= p, then sample.
-    p = 0.9 per assignment.
-    """
-    input_ids = encode_prompt(tokenizer, prompt, device)
-    eos = _eos_id(tokenizer)
-    with torch.no_grad():
-        for _ in range(MAX_NEW_TOKENS):
-            input_ids = crop_context(input_ids)
-            logits = model(input_ids)[0, -1, :] / temperature
-            sorted_logits, sorted_idx = torch.sort(logits, descending=True, dim=-1)
-            sorted_probs = F.softmax(sorted_logits, dim=-1)
-            cumsum = torch.cumsum(sorted_probs, dim=-1)
-            mask = cumsum > p
-            mask[1:] = mask[:-1].clone()
-            mask[0] = False
-            sorted_logits = sorted_logits.clone()
-            sorted_logits[mask] = float("-inf")
-            probs = F.softmax(sorted_logits, dim=-1)
-            choice = torch.multinomial(probs, num_samples=1)
-            next_id = int(sorted_idx[choice].item())
-            input_ids = torch.cat(
-                [input_ids, torch.tensor([[next_id]], device=device)], dim=1
-            )
-            if eos is not None and next_id == eos:
-                break
-    return tokenizer.decode(input_ids[0].tolist())
+    with open(txt_path, "w", encoding="utf-8") as f:
+        for r in results:
+            f.write("=" * 100 + "\n")
+            f.write(f"PROMPT: {r['prompt']}\n\n")
+            f.write("GREEDY:\n")
+            f.write(r["greedy"] + "\n\n")
+            f.write("TOP-K:\n")
+            f.write(r["top_k"] + "\n\n")
+            f.write("NUCLEUS:\n")
+            f.write(r["nucleus"] + "\n\n")
 
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = Tokenizer.from_file(TOKENIZER_PATH)
-    if tokenizer.get_vocab_size() != vocab_size:
-        raise ValueError("Tokenizer vocab size must match config.vocab_size.")
 
-    if not os.path.isfile(MODEL_PATH):
-        raise FileNotFoundError(f"Missing {MODEL_PATH}. Train the model first.")
+    tokenizer_path = os.path.join("tokenizer", "trained_tokenizer", "tokenizer.json")
+    model_path = "gpt_model.pt"   # idk wht the trained model is called assuming it's this
 
-    model = load_trained_model(MODEL_PATH, device)
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+    model = load_model(model_path, device)
 
     prompts = [
-        "the city is located in the northern part of",
-        "the population was recorded in the census as",
-        "the main purpose of the project was to",
+        "The future of artificial intelligence",
+        "In a small town near the river",
+        "The main purpose of the experiment was",
+        "Once the robot reached the door",
+        "Machine learning models can be useful when",
     ]
 
+    generator = TextGenerator(model, tokenizer, device=device)
+
     results = []
-    print(f"Device: {device} | top_k={TOP_K} | nucleus_p={NUCLEUS_P} | temp={TEMPERATURE}\n")
     for prompt in prompts:
-        g = greedy_decode(model, tokenizer, prompt, device)
-        tk = top_k_decode(model, tokenizer, prompt, device, k=TOP_K)
-        nu = nucleus_decode(model, tokenizer, prompt, device, p=NUCLEUS_P)
+        greedy_text = generator.greedy_decode(prompt, max_new_tokens=50)
+        top_k_text = generator.top_k_decode(prompt, max_new_tokens=50, k=50, temperature=1.0)
+        nucleus_text = generator.nucleus_decode(prompt, max_new_tokens=50, p=0.9, temperature=1.0)
 
-        results.append(
-            {
-                "prompt": prompt,
-                "greedy": g,
-                "top_k": tk,
-                "nucleus_top_p": nu,
-                "settings": {
-                    "top_k": TOP_K,
-                    "nucleus_p": NUCLEUS_P,
-                    "temperature": TEMPERATURE,
-                    "max_new_tokens": MAX_NEW_TOKENS,
-                },
-            }
-        )
+        sample = {
+            "prompt": prompt,
+            "greedy": greedy_text,
+            "top_k": top_k_text,
+            "nucleus": nucleus_text,
+        }
+        results.append(sample)
 
-        print("=" * 80)
+        print("=" * 100)
         print("PROMPT:", prompt)
-        print("\n[GREEDY]\n", g)
-        print("\n[TOP-K, k=50]\n", tk)
-        print("\n[NUCLEUS, p=0.9]\n", nu)
+        print("\nGREEDY:\n", greedy_text)
+        print("\nTOP-K:\n", top_k_text)
+        print("\nNUCLEUS:\n", nucleus_text)
         print()
 
-    out_json = "decode_strategy_samples.json"
-    with open(out_json, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"Saved {out_json}")
+    save_results(results)
+    print("Saved outputs to generated_samples.json and generated_samples.txt")
 
 
 if __name__ == "__main__":
