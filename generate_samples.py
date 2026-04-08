@@ -9,12 +9,39 @@ from config import vocab_size, max_seq_len, d_model, n_heads, n_layers, d_ff, dr
 from transformer.CustomerModel import CustomerModel
 
 
+def _apply_repetition_penalty(logits_1d: torch.Tensor, seq_ids: list, penalty: float) -> torch.Tensor:
+    """Down-weight logits for tokens already in context (GPT-style). logits_1d: [V]."""
+    if penalty <= 1.0:
+        return logits_1d
+    out = logits_1d.clone()
+    for tid in set(seq_ids):
+        if out[tid] > 0:
+            out[tid] /= penalty
+        else:
+            out[tid] *= penalty
+    return out
+
+
+def _tail_repeat_len(seq: list) -> int:
+    if not seq:
+        return 0
+    last = seq[-1]
+    n = 0
+    for i in range(len(seq) - 1, -1, -1):
+        if seq[i] == last:
+            n += 1
+        else:
+            break
+    return n
+
+
 class TextGenerator:
-    def __init__(self, model, tokenizer, device="cpu"):
+    def __init__(self, model, tokenizer, device="cpu", eos_token: str = "<eos>"):
         self.model = model.to(device)
         self.tokenizer = tokenizer
         self.device = device
         self.model.eval()
+        self.eos_id = tokenizer.token_to_id(eos_token)
 
     def encode_prompt(self, prompt: str) -> torch.Tensor:
         encoding = self.tokenizer.encode(prompt)
@@ -31,16 +58,28 @@ class TextGenerator:
             input_ids = input_ids[:, -max_seq_len:]
         return input_ids
 
-    def greedy_decode(self, prompt: str, max_new_tokens: int = 50) -> str:
+    def greedy_decode(
+        self,
+        prompt: str,
+        max_new_tokens: int = 50,
+        repetition_penalty: float = 1.15,
+        max_tail_repeat: int = 8,
+    ) -> str:
         input_ids = self.encode_prompt(prompt)
 
         with torch.no_grad():
             for _ in range(max_new_tokens):
                 input_ids = self.crop_context(input_ids)
-                logits = self.model(input_ids)
-                next_token_logits = logits[:, -1, :]
-                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+                seq = input_ids[0].tolist()
+                logits = self.model(input_ids)[0, -1, :]
+                logits = _apply_repetition_penalty(logits, seq, repetition_penalty)
+                next_id = int(torch.argmax(logits).item())
+                if max_tail_repeat > 0 and _tail_repeat_len(seq + [next_id]) >= max_tail_repeat:
+                    break
+                next_token = torch.tensor([[next_id]], dtype=torch.long, device=self.device)
                 input_ids = torch.cat([input_ids, next_token], dim=1)
+                if self.eos_id is not None and next_id == self.eos_id:
+                    break
 
         return self.decode_tokens(input_ids[0].tolist())
 
@@ -48,24 +87,32 @@ class TextGenerator:
         self,
         prompt: str,
         max_new_tokens: int = 50,
-        k: int = 50,
-        temperature: float = 1.0
+        k: int = 40,
+        temperature: float = 0.9,
+        repetition_penalty: float = 1.15,
+        max_tail_repeat: int = 8,
     ) -> str:
         input_ids = self.encode_prompt(prompt)
 
         with torch.no_grad():
             for _ in range(max_new_tokens):
                 input_ids = self.crop_context(input_ids)
-                logits = self.model(input_ids)
-                next_token_logits = logits[:, -1, :] / temperature
+                seq = input_ids[0].tolist()
+                logits = self.model(input_ids)[0, -1, :]
+                logits = _apply_repetition_penalty(logits, seq, repetition_penalty)
+                next_token_logits = logits / max(temperature, 1e-8)
 
                 effective_k = min(k, next_token_logits.size(-1))
                 top_k_vals, top_k_idx = torch.topk(next_token_logits, k=effective_k, dim=-1)
                 probs = F.softmax(top_k_vals, dim=-1)
                 sampled_idx = torch.multinomial(probs, num_samples=1)
-                next_token = top_k_idx.gather(-1, sampled_idx)
-
+                next_id = int(top_k_idx[sampled_idx].item())
+                if max_tail_repeat > 0 and _tail_repeat_len(seq + [next_id]) >= max_tail_repeat:
+                    break
+                next_token = torch.tensor([[next_id]], dtype=torch.long, device=self.device)
                 input_ids = torch.cat([input_ids, next_token], dim=1)
+                if self.eos_id is not None and next_id == self.eos_id:
+                    break
 
         return self.decode_tokens(input_ids[0].tolist())
 
@@ -73,16 +120,20 @@ class TextGenerator:
         self,
         prompt: str,
         max_new_tokens: int = 50,
-        p: float = 0.9,
-        temperature: float = 1.0
+        p: float = 0.92,
+        temperature: float = 0.9,
+        repetition_penalty: float = 1.15,
+        max_tail_repeat: int = 8,
     ) -> str:
         input_ids = self.encode_prompt(prompt)
 
         with torch.no_grad():
             for _ in range(max_new_tokens):
                 input_ids = self.crop_context(input_ids)
-                logits = self.model(input_ids)
-                next_token_logits = logits[:, -1, :] / temperature
+                seq = input_ids[0].tolist()
+                logits = self.model(input_ids)[0, -1, :]
+                logits = _apply_repetition_penalty(logits, seq, repetition_penalty)
+                next_token_logits = logits / max(temperature, 1e-8)
 
                 sorted_logits, sorted_indices = torch.sort(
                     next_token_logits, descending=True, dim=-1
@@ -91,15 +142,20 @@ class TextGenerator:
                 cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
 
                 remove_mask = cumulative_probs > p
-                remove_mask[..., 1:] = remove_mask[..., :-1].clone()
-                remove_mask[..., 0] = False
+                remove_mask[1:] = remove_mask[:-1].clone()
+                remove_mask[0] = False
 
+                sorted_logits = sorted_logits.clone()
                 sorted_logits[remove_mask] = float("-inf")
                 filtered_probs = F.softmax(sorted_logits, dim=-1)
                 sampled_idx = torch.multinomial(filtered_probs, num_samples=1)
-                next_token = sorted_indices.gather(-1, sampled_idx)
-
+                next_id = int(sorted_indices[sampled_idx].item())
+                if max_tail_repeat > 0 and _tail_repeat_len(seq + [next_id]) >= max_tail_repeat:
+                    break
+                next_token = torch.tensor([[next_id]], dtype=torch.long, device=self.device)
                 input_ids = torch.cat([input_ids, next_token], dim=1)
+                if self.eos_id is not None and next_id == self.eos_id:
+                    break
 
         return self.decode_tokens(input_ids[0].tolist())
 
