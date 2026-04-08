@@ -43,7 +43,9 @@ class TextGenerator:
         self.model.eval()
         self.eos_id = tokenizer.token_to_id(eos_token)
 
-    def encode_prompt(self, prompt: str) -> torch.Tensor:
+    def encode_prompt(self, prompt: str, strip: bool = True) -> torch.Tensor:
+        if strip:
+            prompt = " ".join(prompt.split())
         encoding = self.tokenizer.encode(prompt)
         ids = encoding.ids
         if len(ids) == 0:
@@ -62,8 +64,8 @@ class TextGenerator:
         self,
         prompt: str,
         max_new_tokens: int = 50,
-        repetition_penalty: float = 1.15,
-        max_tail_repeat: int = 8,
+        repetition_penalty: float = 1.28,
+        max_tail_repeat: int = 6,
     ) -> str:
         input_ids = self.encode_prompt(prompt)
 
@@ -83,14 +85,69 @@ class TextGenerator:
 
         return self.decode_tokens(input_ids[0].tolist())
 
+    def beam_decode(
+        self,
+        prompt: str,
+        max_new_tokens: int = 64,
+        beam_width: int = 4,
+        repetition_penalty: float = 1.25,
+        max_tail_repeat: int = 6,
+    ) -> str:
+        """Breadth-first beam search on log-probability (often slightly smoother than greedy)."""
+        input_ids = self.encode_prompt(prompt)
+        beams = [(0.0, input_ids)]
+        completed = []
+
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                all_cands = []
+                for score, ids in beams:
+                    ids = self.crop_context(ids)
+                    seq = ids[0].tolist()
+                    logits = self.model(ids)[0, -1, :]
+                    logits = _apply_repetition_penalty(logits, seq, repetition_penalty)
+                    logp = F.log_softmax(logits, dim=-1)
+                    n_expand = min(beam_width * 3, logp.size(0))
+                    topv, topi = torch.topk(logp, n_expand)
+                    for j in range(topi.size(0)):
+                        nid = int(topi[j].item())
+                        if max_tail_repeat > 0 and _tail_repeat_len(seq + [nid]) >= max_tail_repeat:
+                            continue
+                        ns = score + float(topv[j].item())
+                        new_t = torch.cat(
+                            [ids, torch.tensor([[nid]], dtype=torch.long, device=ids.device)],
+                            dim=1,
+                        )
+                        if self.eos_id is not None and nid == self.eos_id:
+                            completed.append((ns, new_t))
+                        else:
+                            all_cands.append((ns, new_t))
+                if not all_cands:
+                    break
+                all_cands.sort(key=lambda x: -x[0])
+                beams = all_cands[:beam_width]
+
+        def length_norm(score: float, length: int) -> float:
+            length = max(length, 1)
+            return score / (length ** 0.65)
+
+        pool = completed + [(s, t) for s, t in beams]
+        if not pool:
+            return self.decode_tokens(input_ids[0].tolist())
+        best_s, best_t = max(
+            pool,
+            key=lambda st: length_norm(st[0], st[1].size(1)),
+        )
+        return self.decode_tokens(best_t[0].tolist())
+
     def top_k_decode(
         self,
         prompt: str,
         max_new_tokens: int = 50,
-        k: int = 40,
-        temperature: float = 0.9,
-        repetition_penalty: float = 1.15,
-        max_tail_repeat: int = 8,
+        k: int = 28,
+        temperature: float = 0.72,
+        repetition_penalty: float = 1.28,
+        max_tail_repeat: int = 6,
     ) -> str:
         input_ids = self.encode_prompt(prompt)
 
@@ -120,10 +177,10 @@ class TextGenerator:
         self,
         prompt: str,
         max_new_tokens: int = 50,
-        p: float = 0.92,
-        temperature: float = 0.9,
-        repetition_penalty: float = 1.15,
-        max_tail_repeat: int = 8,
+        p: float = 0.85,
+        temperature: float = 0.72,
+        repetition_penalty: float = 1.28,
+        max_tail_repeat: int = 6,
     ) -> str:
         input_ids = self.encode_prompt(prompt)
 
@@ -199,6 +256,8 @@ def save_results(results, json_path="generated_samples.json", txt_path="generate
             f.write(f"PROMPT: {r['prompt']}\n\n")
             f.write("GREEDY:\n")
             f.write(r["greedy"] + "\n\n")
+            f.write("BEAM:\n")
+            f.write(r["beam"] + "\n\n")
             f.write("TOP-K:\n")
             f.write(r["top_k"] + "\n\n")
             f.write("NUCLEUS:\n")
@@ -221,25 +280,29 @@ def main():
 
     model = load_model(model_path, device)
 
+    # Starters closer to WikiText (encyclopedic) usually continue more coherently than
+    # creative fiction / ML prompts, which the model was not trained to complete.
     prompts = [
-        "The future of artificial intelligence",
-        "In a small town near the river",
-        "The main purpose of the experiment was",
-        "Once the robot reached the door",
-        "Machine learning models can be useful when",
+        "the city is located in the northern part of",
+        "the population was recorded in the census as",
+        "the main purpose of the project was to",
+        "the building was designed by the architect",
+        "the film was released in",
     ]
 
     generator = TextGenerator(model, tokenizer, device=device)
 
     results = []
     for prompt in prompts:
-        greedy_text = generator.greedy_decode(prompt, max_new_tokens=50)
-        top_k_text = generator.top_k_decode(prompt, max_new_tokens=50, k=50, temperature=1.0)
-        nucleus_text = generator.nucleus_decode(prompt, max_new_tokens=50, p=0.9, temperature=1.0)
+        greedy_text = generator.greedy_decode(prompt, max_new_tokens=64)
+        beam_text = generator.beam_decode(prompt, max_new_tokens=64)
+        top_k_text = generator.top_k_decode(prompt, max_new_tokens=64)
+        nucleus_text = generator.nucleus_decode(prompt, max_new_tokens=64)
 
         sample = {
             "prompt": prompt,
             "greedy": greedy_text,
+            "beam": beam_text,
             "top_k": top_k_text,
             "nucleus": nucleus_text,
         }
@@ -248,6 +311,7 @@ def main():
         print("=" * 100)
         print("PROMPT:", prompt)
         print("\nGREEDY:\n", greedy_text)
+        print("\nBEAM:\n", beam_text)
         print("\nTOP-K:\n", top_k_text)
         print("\nNUCLEUS:\n", nucleus_text)
         print()
